@@ -1,0 +1,3 @@
+Hostname,MAC Address,IP Address
+CoreSwitch-Example,aa:bb:cc:dd:ee:01,10.0.0.1
+Workstation-Example,aa:bb:cc:dd:ee:02,10.0.0.50
