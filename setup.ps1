@@ -75,15 +75,23 @@ if (-not $pythonCmd) {
 $pyParts = $pythonCmd -split ' '
 $pyExe = $pyParts[0]
 $pyArgs = $pyParts | Select-Object -Skip 1
+$resolvedPath = (Get-Command $pyExe -ErrorAction SilentlyContinue).Source
 $versionOutput = & $pyExe @pyArgs --version 2>&1
-Write-Host "Using: $pythonCmd ($versionOutput)"
+Write-Host "Using: $pythonCmd -> $resolvedPath ($versionOutput)"
 
 if (-not (Test-Path 'venv\Scripts\python.exe')) {
-    Write-Host "Creating virtual environment..."
-    & $pyExe @pyArgs -m venv venv
+    Write-Host "Creating virtual environment in $(Get-Location)\venv ..."
+    $venvOutput = & $pyExe @pyArgs -m venv venv --clear 2>&1
+    Write-Host "exit code: $LASTEXITCODE"
+    if ($venvOutput) { Write-Host "output: $venvOutput" }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path 'venv\Scripts\python.exe')) {
         Write-Host "Virtual environment creation failed (venv\Scripts\python.exe not found afterward)."
-        Write-Host "$pythonCmd -m venv exited with code $LASTEXITCODE"
+        if (Test-Path 'venv') {
+            Write-Host "venv\ contents:"
+            Get-ChildItem -Recurse venv | ForEach-Object { Write-Host "  $($_.FullName)" }
+        } else {
+            Write-Host "venv\ was not created at all."
+        }
         exit 1
     }
 }
