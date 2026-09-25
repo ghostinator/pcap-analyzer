@@ -1,0 +1,34 @@
+name: Test Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'install.ps1'
+      - 'setup.ps1'
+      - '.github/workflows/test-windows.yml'
+
+jobs:
+  setup:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run setup.ps1
+        shell: pwsh
+        run: .\setup.ps1
+
+      - name: Verify the GUI module imports (no display needed - just parses
+          and pulls in scapy)
+        shell: pwsh
+        run: .\venv\Scripts\python.exe -c "import pcap_analyzer_gui; print('import OK')"
+
+      - name: Run a CLI tool against a generated packet capture
+        shell: pwsh
+        run: |
+          .\venv\Scripts\python.exe -c "from scapy.all import IP, TCP, wrpcap; wrpcap('smoke.pcap', [IP(src='10.0.0.1', dst='10.0.0.2')/TCP(sport=1234, dport=80)])"
+          .\venv\Scripts\python.exe tools\pcap_info.py smoke.pcap
+
+      - name: Re-run setup.ps1 (idempotency - existing venv should be reused, not fail)
+        shell: pwsh
+        run: .\setup.ps1
