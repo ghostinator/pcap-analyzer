@@ -13,6 +13,12 @@ repo, sets up a virtual environment, and launches the GUI.
 curl -fsSL https://raw.githubusercontent.com/ghostinator/pcap-analyzer/main/install.sh | bash
 ```
 
+One-liner (Windows, in PowerShell): same, via `winget`.
+
+```powershell
+irm https://raw.githubusercontent.com/ghostinator/pcap-analyzer/main/install.ps1 | iex
+```
+
 Or manually:
 
 ```bash
@@ -22,15 +28,11 @@ cd pcap-analyzer
 ./setup.sh --run    # ...or set up and launch the GUI in one step
 ```
 
-**Windows:** run the above inside WSL, or manually: install Python 3.9+ from
-[python.org](https://www.python.org/downloads/) (includes tkinter), then
-
 ```powershell
 git clone https://github.com/ghostinator/pcap-analyzer.git
 cd pcap-analyzer
-python -m venv venv
-venv\Scripts\pip install -r requirements.txt
-venv\Scripts\python pcap_analyzer_gui.py
+.\setup.ps1          # sets up venv + dependencies
+.\setup.ps1 -Run     # ...or set up and launch the GUI in one step
 ```
 
 ## GUI Dashboard

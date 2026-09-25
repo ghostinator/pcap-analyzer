@@ -890,8 +890,9 @@ class PCAPAnalyzerApp:
         duration = last_ts - first_ts
         pps = total_packets / duration if duration > 0 else 0
         
-        # TCP retransmission analysis
-        tcp_retrans = self.count_tcp_retransmissions()
+        # TCP retransmission analysis (computed once, shared by every tab below)
+        tcp_retrans_info = self.analyze_tcp_retransmissions()
+        tcp_retrans = tcp_retrans_info['total']
         retrans_rate = (tcp_retrans / results['tcp_packets'] * 100) if results['tcp_packets'] > 0 else 0
         
         # Update metric cards
@@ -914,8 +915,8 @@ class PCAPAnalyzerApp:
         # Update all analysis tabs
         self.update_overview_tab(results, tcp_retrans, retrans_rate)
         self.update_packets_tab()
-        self.update_tcp_analysis(results['tcp_connections'])
-        self.update_errors_tab()
+        self.update_tcp_analysis(results['tcp_connections'], tcp_retrans_info)
+        self.update_errors_tab(tcp_retrans_info)
         self.update_dns_tab(results['dns_queries'], results['dns_responses'])
         self.update_hosts_tab(results['ip_traffic'])
         self.update_wireless_tab(results['has_wireless'], results['wireless_clients'])
@@ -1037,21 +1038,21 @@ class PCAPAnalyzerApp:
                     info
                 ))
     
-    def update_tcp_analysis(self, tcp_connections):
+    def update_tcp_analysis(self, tcp_connections, tcp_retrans_info):
         """Update TCP analysis tab with streams and window analysis."""
         # TCP Streams - calculate actual bytes sent/received and retransmissions
         self.tcp_tree.delete(*self.tcp_tree.get_children())
-        
+
         for conn_key, pkts in list(tcp_connections.items())[:50]:  # Limit to first 50
             packets_count = len(pkts)
-            
+
             # Parse connection key to get IPs and ports
             parts = conn_key.split(' <-> ')
             src_part = parts[0].split(':')
             dst_part = parts[1].split(':')
             src_ip = src_part[0]
             dst_ip = dst_part[0]
-            
+
             # Calculate bytes sent and received
             bytes_sent = 0
             bytes_recv = 0
@@ -1061,19 +1062,9 @@ class PCAPAnalyzerApp:
                         bytes_sent += pkt[IP].len
                     elif pkt[IP].src == dst_ip:
                         bytes_recv += pkt[IP].len
-            
-            # Count retransmissions for this connection (simplified)
-            seq_seen = set()
-            retrans_count = 0
-            for pkt in pkts:
-                if pkt.haslayer(IP) and pkt.haslayer(TCP):
-                    if pkt[IP].src == src_ip:
-                        seq_key = (pkt[IP].src, pkt[TCP].sport, pkt[TCP].seq)
-                        if seq_key in seq_seen:
-                            retrans_count += 1
-                        else:
-                            seq_seen.add(seq_key)
-            
+
+            retrans_count = tcp_retrans_info['by_connection'].get(conn_key, 0)
+
             self.tcp_tree.insert("", tk.END, values=(
                 conn_key,
                 packets_count,
@@ -1093,40 +1084,23 @@ class PCAPAnalyzerApp:
         window_text += f"Packets with small receive window (<1024): {small_windows}\n"
         self.update_text_widget(self.window_text, window_text)
     
-    def update_errors_tab(self):
+    def update_errors_tab(self, tcp_retrans_info):
         """Update errors tab with summary and distribution."""
         # Error Summary
-        tcp_retrans = self.count_tcp_retransmissions()
-        
-        errors_text = f"TCP Retransmissions: {tcp_retrans:,}\n\n"
+        errors_text = f"TCP Retransmissions: {tcp_retrans_info['total']:,}\n\n"
         errors_text += "Error analysis complete.\n"
         self.update_text_widget(self.errors_text, errors_text)
-        
-        # Error Distribution by Host - track retransmissions per source IP
-        host_errors = defaultdict(lambda: {'retrans': 0, 'dup_acks': 0, 'rst': 0})
-        seq_seen_per_host = defaultdict(set)
-        
-        for pkt in self.packets:
-            if pkt.haslayer(IP) and pkt.haslayer(TCP):
-                src_ip = pkt[IP].src
-                seq_key = (pkt[IP].src, pkt[TCP].sport, pkt[TCP].seq)
-                
-                # Detect retransmissions per host
-                if seq_key in seq_seen_per_host[src_ip]:
-                    host_errors[src_ip]['retrans'] += 1
-                else:
-                    seq_seen_per_host[src_ip].add(seq_key)
-        
-        # Update error distribution table
+
+        # Error Distribution by Host - retransmissions per source IP
         self.error_dist_tree.delete(*self.error_dist_tree.get_children())
-        for host, errors in sorted(host_errors.items(), key=lambda x: -x[1]['retrans'])[:20]:
-            if errors['retrans'] > 0:
-                self.error_dist_tree.insert("", tk.END, values=(
-                    host,
-                    errors['retrans'],
-                    errors['dup_acks'],
-                    errors['rst']
-                ))
+        sorted_hosts = sorted(tcp_retrans_info['by_host'].items(), key=lambda x: -x[1])[:20]
+        for host, retrans_count in sorted_hosts:
+            self.error_dist_tree.insert("", tk.END, values=(
+                host,
+                retrans_count,
+                0,  # dup_acks: not tracked
+                0   # rst: not tracked
+            ))
     
     def update_dns_tab(self, dns_queries, dns_responses):
         """Update DNS tab with queries and response status."""
@@ -1401,33 +1375,45 @@ class PCAPAnalyzerApp:
         
         self.update_text_widget(self.dup_text, dup_text)
     
-    def count_tcp_retransmissions(self):
-        """Count TCP retransmissions using proper sequence tracking per connection."""
-        # Track highest sequence number seen for each connection direction
-        connection_state = {}  # (src, sport, dst, dport) -> highest_seq_seen
-        retransmissions = 0
-        
+    def analyze_tcp_retransmissions(self):
+        """Count TCP retransmissions: a data segment that doesn't advance the
+        highest sequence number already sent in that direction. Pure ACKs
+        (payload_len == 0) are skipped - they carry no data to retransmit and
+        routinely repeat the same sequence number as the last real segment,
+        which is indistinguishable from a retransmission by sequence number
+        alone. Counting them massively overstates the rate: a normal one-way
+        transfer (data one way, ACKs the other) with zero real
+        retransmissions measured at 47% before this exclusion."""
+        highest_seq_end = {}  # conn_key -> highest seq+payload_len seen
+        total = 0
+        by_host = defaultdict(int)
+        by_connection = defaultdict(int)
+
         for pkt in self.packets:
-            if pkt.haslayer(IP) and pkt.haslayer(TCP):
-                conn_key = (pkt[IP].src, pkt[TCP].sport, pkt[IP].dst, pkt[TCP].dport)
-                seq = pkt[TCP].seq
-                
-                # Calculate payload length to determine sequence advancement
-                ip_len = pkt[IP].len
-                ip_header_len = pkt[IP].ihl * 4
-                tcp_header_len = pkt[TCP].dataofs * 4
-                payload_len = max(0, ip_len - ip_header_len - tcp_header_len)
-                
-                if conn_key not in connection_state:
-                    connection_state[conn_key] = seq + payload_len
-                else:
-                    # If this packet doesn't advance the sequence space, it's a retransmission
-                    if seq + payload_len <= connection_state[conn_key]:
-                        retransmissions += 1
-                    else:
-                        connection_state[conn_key] = seq + payload_len
-        
-        return retransmissions
+            if not (pkt.haslayer(IP) and pkt.haslayer(TCP)):
+                continue
+
+            ip_len = pkt[IP].len
+            ip_header_len = pkt[IP].ihl * 4
+            tcp_header_len = pkt[TCP].dataofs * 4
+            payload_len = max(0, ip_len - ip_header_len - tcp_header_len)
+            if payload_len == 0:
+                continue
+
+            src_ip, dst_ip = pkt[IP].src, pkt[IP].dst
+            conn_key = f"{src_ip}:{pkt[TCP].sport} <-> {dst_ip}:{pkt[TCP].dport}"
+            seq_end = pkt[TCP].seq + payload_len
+
+            if conn_key not in highest_seq_end:
+                highest_seq_end[conn_key] = seq_end
+            elif seq_end <= highest_seq_end[conn_key]:
+                total += 1
+                by_host[src_ip] += 1
+                by_connection[conn_key] += 1
+            else:
+                highest_seq_end[conn_key] = seq_end
+
+        return {'total': total, 'by_host': by_host, 'by_connection': by_connection}
     
     def calculate_avg_rtt(self):
         """Calculate average RTT using ICMP echo request/reply pairs."""
