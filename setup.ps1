@@ -75,16 +75,24 @@ if (-not $pythonCmd) {
 $pyParts = $pythonCmd -split ' '
 $pyExe = $pyParts[0]
 $pyArgs = $pyParts | Select-Object -Skip 1
-Write-Host "Using: $pythonCmd ($(& $pyExe @pyArgs --version))"
+$versionOutput = & $pyExe @pyArgs --version 2>&1
+Write-Host "Using: $pythonCmd ($versionOutput)"
 
-if (-not (Test-Path 'venv')) {
+if (-not (Test-Path 'venv\Scripts\python.exe')) {
     Write-Host "Creating virtual environment..."
     & $pyExe @pyArgs -m venv venv
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path 'venv\Scripts\python.exe')) {
+        Write-Host "Virtual environment creation failed (venv\Scripts\python.exe not found afterward)."
+        Write-Host "$pythonCmd -m venv exited with code $LASTEXITCODE"
+        exit 1
+    }
 }
 
 Write-Host "Installing dependencies..."
 & .\venv\Scripts\python.exe -m pip install --quiet --upgrade pip
+if ($LASTEXITCODE -ne 0) { Write-Host "pip upgrade failed (exit $LASTEXITCODE)"; exit 1 }
 & .\venv\Scripts\pip.exe install --quiet -r requirements.txt
+if ($LASTEXITCODE -ne 0) { Write-Host "dependency install failed (exit $LASTEXITCODE)"; exit 1 }
 
 Write-Host ""
 Write-Host "Setup complete."
