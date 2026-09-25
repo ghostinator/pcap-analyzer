@@ -12,27 +12,26 @@ function Test-Command($name) {
     return [bool](Get-Command $name -ErrorAction SilentlyContinue)
 }
 
-function Test-Tkinter($pythonExe) {
-    & $pythonExe -c "import tkinter" 2>$null
-    return $LASTEXITCODE -eq 0
-}
-
 function Find-PythonWithTkinter {
-    # Prefer the `py` launcher (what python.org's installer registers) over a
-    # bare `python`, which on stock Windows is often the Microsoft Store's
-    # app-execution-alias stub that doesn't actually have Python installed.
+    # Prefer a bare `python`/`python3` over the `py` launcher: on at least one
+    # real Windows runner, `py -3 <anything>` - --version, -m venv, -c - was
+    # observed to silently exit 0 with zero output and do nothing at all
+    # (confirmed via CI on windows-latest), so checking exit code alone was a
+    # false positive. `python`/`python3` don't go through that launcher hop.
     $candidates = @()
-    if (Test-Command 'py') { $candidates += @('py -3', 'py') }
     if (Test-Command 'python') { $candidates += 'python' }
     if (Test-Command 'python3') { $candidates += 'python3' }
+    if (Test-Command 'py') { $candidates += @('py -3', 'py') }
 
     foreach ($cmd in $candidates) {
         $parts = $cmd -split ' '
         $exe = $parts[0]
         $exeArgs = $parts | Select-Object -Skip 1
         try {
-            & $exe @exeArgs -c "import tkinter" 2>$null
-            if ($LASTEXITCODE -eq 0) {
+            # Check for actual sentinel output, not just exit code - a
+            # command that silently no-ops still exits 0.
+            $out = & $exe @exeArgs -c "print('TK', 'OK' if __import__('importlib.util', fromlist=['find_spec']).find_spec('tkinter') else 'MISSING', sep='')" 2>$null
+            if ($LASTEXITCODE -eq 0 -and ($out -join "`n") -match 'TKOK') {
                 return $cmd
             }
         } catch {
