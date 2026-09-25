@@ -15,6 +15,13 @@ from datetime import datetime
 # Add parent directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# The protocol bar chart below prints '█', which Windows' default console
+# codepage (cp1252) can't encode and crashes on; force UTF-8 output.
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError):
+    pass
+
 try:
     from scapy.all import rdpcap, IP, TCP, UDP, ICMP, DNS, ARP
     try:
